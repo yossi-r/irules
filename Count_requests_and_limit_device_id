@@ -1,0 +1,72 @@
+when RULE_INIT {
+    set static::TPS_Value 3
+    set static::TPS_Timeout 120
+    set static::debug 0
+}
+when BOTDEFENSE_REQUEST {
+    #for demo purpose, make the challange valid from the first request - make sure you go to the default 
+   if {[HTTP::uri] equals "/"} {
+        BOTDEFENSE::cs_allowed true
+    }
+    #Mandate the device_id attribute extraction
+    BOTDEFENSE::cs_attribute device_id enable
+}
+
+when BOTDEFENSE_ACTION {
+    set device_id [BOTDEFENSE::device_id]
+}
+when ASM_REQUEST_DONE {
+    set violation 0
+    set request_payload [string tolower [ASM::payload]]
+    if {$static::debug > 0} {log "http uri is [HTTP::uri]"}
+    if { [class match [HTTP::uri] starts_with Watched_uri] } {
+        if {$static::debug > 0} {log local0. "watched uri hit"}
+        if { [class match $request_payload contains Watched_parameter] } 
+        {
+            if {$static::debug > 0} {log local0. "watched parameter hit"}
+            set parameter "unknown"
+            foreach x [split $request_payload "&"] {
+            if { [class match $x starts_with Watched_parameter] } {
+            set parameter [lindex [split $x "="] 1]
+            if {$static::debug > 0} {log local0. "parameter is $parameter"}
+            }
+            }
+            set device_parameter [concat $device_id"_"$parameter]
+            log $device_parameter
+            set val [table lookup -notouch -subtable TPS_WATCHED_URI $device_parameter] 
+            log "val is: $val"
+            if {$val > 0} {
+            incr val
+            if {$static::debug > 0} {log local0. [concat "this is the value of val =" . $val]}
+            table incr -notouch -subtable TPS_WATCHED_URI $device_parameter
+            if { $static::TPS_Value < $val } {
+                if {$static::debug > 0} {log local0. "request limit reached for [HTTP::uri] and paramaeter $parameter"}
+                set violation 1
+                }
+            } else {
+                    table set -subtable TPS_WATCHED_URI $device_parameter 1 $static::TPS_Timeout
+                }
+
+            }
+    }
+    if {$violation > 0} {
+        log local0. [concat "ASM violation from the following device" $device_id]
+        ASM::raise Custom_TPS [concat "IP" $device_id "Reached max TPS"]
+                }
+#    virtual Hackazone_APM_virt
+}
+when HTTP_REQUEST_SEND {
+    clientside {
+   # Need to force the host header replacement and HTTP:: commands into the clientside context
+   # as the HTTP_REQUEST_SEND event is in the serverside context
+      if {$static::debug > 0} {log "device id is: $device_id"}
+      if {[info exists device_id]} {
+      HTTP::header insert "device_id" "$device_id"
+      }
+    }
+}
+when HTTP_RESPONSE_RELEASE {
+    if {[info exists botdefense_responded]} {
+        HTTP::header insert "X-TS-BP-Action" "2"
+    }
+}
